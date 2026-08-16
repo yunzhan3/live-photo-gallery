@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{ title }} - 相册</title>
+<style>
+  body { margin:0; background:#F0F0F0; font-family:"Microsoft YaHei",sans-serif; font-size:17px; color:#333; }
+  header { padding:28px 40px 8px; display:flex; align-items:center; gap:24px; }
+  header h1 { margin:0; font-size:28px; }
+  header a { font-size:16px; color:#4A90D9; text-decoration:none; }
+  #orgbtn { position:fixed; top:22px; right:40px; z-index:6;
+            font-size:17px; padding:10px 24px; border:1px solid #4A90D9;
+            background:#fff; color:#4A90D9; border-radius:6px; cursor:pointer; }
+  #orgbtn.on { background:#4A90D9; color:#fff; }
+  .day { padding:14px 40px 30px; }
+  .day h2 { font-size:19px; margin:10px 0 14px; color:#555; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,190px); gap:8px; }
+  .cell { position:relative; width:190px; height:190px; cursor:pointer; background:#ddd; }
+  .cell img { width:100%; height:100%; object-fit:cover; display:block; }
+  .badge { position:absolute; left:6px; top:6px; background:rgba(0,0,0,.55); color:#fff;
+           font-size:13px; padding:2px 8px; border-radius:10px; }
+  /* 整理模式 */
+  body.organize .cell::after { content:""; position:absolute; right:8px; top:8px; width:26px; height:26px;
+           border-radius:50%; background:rgba(255,255,255,.85); border:2px solid #999;
+           font-size:18px; line-height:26px; text-align:center; color:#fff; }
+  body.organize .cell.sel::after { content:"✓"; background:#4A90D9; border-color:#4A90D9; }
+  body.organize .cell.sel img { outline:4px solid #4A90D9; outline-offset:-4px; }
+  #toolbar { display:none; position:fixed; bottom:0; left:0; right:0; background:#fff;
+             border-top:1px solid #ccc; padding:16px 40px; align-items:center; gap:16px;
+             font-size:17px; z-index:5; }
+  #toolbar.on { display:flex; }
+  #selcount { font-weight:bold; }
+  #targetalbum { flex:1; max-width:360px; font-size:17px; padding:10px 12px;
+                 border:1px solid #aaa; border-radius:6px; font-family:inherit; }
+  .tbtn { font-size:17px; padding:10px 26px; border:none; border-radius:6px; cursor:pointer; }
+  .tbtn.blue { background:#4A90D9; color:#fff; }
+  .tbtn.red { background:#D9534F; color:#fff; }
+  .tbtn.gray { background:#E8E8E8; color:#333; border:1px solid #bbb; }
+  /* 大图查看 */
+  #lightbox { display:none; position:fixed; inset:0; background:rgba(0,0,0,.88);
+              align-items:center; justify-content:center; z-index:10; }
+  #lightbox.open { display:flex; }
+  #lightbox img, #lightbox video { max-width:92vw; max-height:88vh; }
+  #lightbox .close { position:absolute; top:22px; right:34px; font-size:36px; color:#fff;
+                     cursor:pointer; user-select:none; }
+  #lightbox .nav { position:absolute; top:50%; transform:translateY(-50%); font-size:52px;
+                   color:#fff; cursor:pointer; user-select:none; padding:0 24px; }
+  #prev { left:0; } #next { right:0; }
+  #livebtn { position:absolute; bottom:30px; left:50%; transform:translateX(-50%);
+             background:#4A90D9; color:#fff; border:none; font-size:17px;
+             padding:10px 26px; border-radius:6px; cursor:pointer; display:none; }
+  #infobtn { position:absolute; bottom:30px; right:34px; background:rgba(255,255,255,.15);
+             color:#fff; border:1px solid rgba(255,255,255,.5); font-size:17px;
+             padding:10px 22px; border-radius:6px; cursor:pointer; }
+  #infopanel { position:absolute; top:80px; right:34px; min-width:300px; max-width:380px;
+               background:rgba(20,20,20,.92); color:#eee; padding:18px 24px;
+               font-size:16px; line-height:1.9; display:none; border-radius:8px;
+               word-break:break-all; }
+  #infopanel.open { display:block; }
+  #infopanel .label { color:#999; display:inline-block; width:90px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ title }}</h1>
+  <a href="{{ url_for('albums') }}">← 返回相册墙</a>
+  <button id="orgbtn" onclick="toggleOrganize()">☑ 整理照片</button>
+</header>
+
+{% for label, items in groups %}
+<div class="day">
+  <h2>{{ label }}（{{ items|length }} 张）</h2>
+  <div class="grid">
+    {% for it in items %}
+    <div class="cell">
+      <img src="{{ it.thumb }}" loading="lazy" alt="">
+      {% if it.kind == 'video' %}<span class="badge">▶ 视频</span>
+      {% elif it.is_live %}<span class="badge">实况</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<div id="toolbar">
+  <span id="selcount">已选 0 张</span>
+  <button class="tbtn gray" onclick="selectAll()">全选</button>
+  <input id="targetalbum" list="albumlist" placeholder="目标相册（可以输入新名字）">
+  <datalist id="albumlist"></datalist>
+  <button class="tbtn blue" onclick="doMove()">移动</button>
+  <button class="tbtn red" onclick="doDelete()">删除</button>
+  <button class="tbtn blue" style="background:#5CB85C;" onclick="doExport()">导出到桌面</button>
+  {% if album_name %}<button class="tbtn gray" onclick="setCover()">设为封面</button>{% endif %}
+  <button class="tbtn gray" onclick="toggleOrganize()">取消</button>
+</div>
+
+<div id="lightbox">
+  <span class="close" onclick="closeLB()">✕</span>
+  <span class="nav" id="prev" onclick="step(-1)">‹</span>
+  <img id="lbimg" src="" alt="">
+  <video id="lbvideo" controls loop muted style="display:none;"></video>
+  <span class="nav" id="next" onclick="step(1)">›</span>
+  <button id="livebtn" onclick="toggleLive()">▶ 播放实况</button>
+  <button id="infobtn" onclick="toggleInfo()">ⓘ 信息</button>
+  <div id="infopanel"></div>
+</div>
+
+<script>
+const DATA = {{ flat | tojson }};
+const ALBUM = {{ album_name | tojson }};
+let idx = 0, organize = false;
+const selected = new Set();
+const lb = document.getElementById('lightbox'),
+      img = document.getElementById('lbimg'),
+      vid = document.getElementById('lbvideo'),
+      livebtn = document.getElementById('livebtn'),
+      orgbtn = document.getElementById('orgbtn'),
+      toolbar = document.getElementById('toolbar'),
+      selcount = document.getElementById('selcount'),
+      cells = document.querySelectorAll('.cell');
+
+cells.forEach((cell, i) => cell.addEventListener('click', () => {
+  if (organize) {
+    if (selected.has(i)) { selected.delete(i); cell.classList.remove('sel'); }
+    else { selected.add(i); cell.classList.add('sel'); }
+    selcount.textContent = '已选 ' + selected.size + ' 张';
+  } else {
+    openLB(i);
+  }
+}));
+
+function toggleOrganize() {
+  organize = !organize;
+  document.body.classList.toggle('organize', organize);
+  toolbar.classList.toggle('on', organize);
+  orgbtn.classList.toggle('on', organize);
+  selected.clear();
+  cells.forEach(c => c.classList.remove('sel'));
+  selcount.textContent = '已选 0 张';
+  if (organize) {
+    fetch('/api/albums').then(r => r.json()).then(d => {
+      document.getElementById('albumlist').innerHTML =
+        ['未分类', ...d.albums].map(a => `<option value="${a}">`).join('');
+    });
+  }
+}
+
+function selectAll() {
+  if (selected.size === DATA.length) {
+    selected.clear();
+    cells.forEach(c => c.classList.remove('sel'));
+  } else {
+    DATA.forEach((_, i) => selected.add(i));
+    cells.forEach(c => c.classList.add('sel'));
+  }
+  selcount.textContent = '已选 ' + selected.size + ' 张';
+}
+
+function doMove() {
+  const album = document.getElementById('targetalbum').value.trim();
+  if (selected.size === 0) { alert('先勾选要移动的照片'); return; }
+  if (!album) { alert('填一下目标相册名'); return; }
+  if (!confirm(`把 ${selected.size} 张照片移动到「${album}」？\n实况照片的视频会一起搬过去。`)) return;
+  const targets = [...selected].map(i => DATA[i].rel);
+  fetch('/move', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({targets, album})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) {
+      let msg = `已移动 ${d.moved} 张 ✓`;
+      if (d.errors && d.errors.length) msg += `\n${d.errors.length} 张失败：\n` + d.errors.join('\n');
+      alert(msg);
+      location.reload();
+    } else {
+      alert('移动失败：' + (d.error || '未知错误'));
+    }
+  });
+}
+
+function doDelete() {
+  if (selected.size === 0) { alert('先勾选要删除的照片'); return; }
+  if (!confirm(`删除 ${selected.size} 张照片？\n\n它们会被移到照片目录下的「回收站」文件夹，\n相册里不再显示。想彻底清掉的话去那个文件夹手动清空。`)) return;
+  const targets = [...selected].map(i => DATA[i].rel);
+  fetch('/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({targets})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) {
+      let msg = `已删除 ${d.deleted} 张（在回收站文件夹里可以找回）`;
+      if (d.errors && d.errors.length) msg += `\n${d.errors.length} 张失败：\n` + d.errors.join('\n');
+      alert(msg);
+      location.reload();
+    } else {
+      alert('删除失败：' + (d.error || '未知错误'));
+    }
+  });
+}
+
+function setCover() {
+  if (selected.size !== 1) { alert('先只勾选一个当封面'); return; }
+  const i = [...selected][0];
+  const tip = DATA[i].kind === 'video'
+    ? '把这段视频在网格里显示的那一帧设为封面？'
+    : '把这张照片设为封面？（实况照片用的是它的静态图）';
+  if (!confirm(tip)) return;
+  fetch('/api/album_cover/pick', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({album: ALBUM, rel: DATA[i].rel})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) alert('封面设置成功 ✓ 回相册墙就能看到');
+    else alert('设置失败：' + (d.error || '未知错误'));
+  });
+}
+
+function doExport() {
+  if (selected.size === 0) { alert('先勾选要导出的照片'); return; }
+  if (!confirm(`把 ${selected.size} 张照片复制到桌面的小文件夹？\n（原图不动，实况视频会一起复制，用于导回手机）`)) return;
+  const targets = [...selected].map(i => DATA[i].rel);
+  fetch('/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({targets})
+  }).then(r => r.json()).then(d => {
+    if (d.ok) {
+      let msg = `已导出 ${d.exported} 张 ✓\n文件夹在：${d.folder}`;
+      const fixes = [];
+      if (d.repaired) fixes.push(`${d.repaired} 个视频补写了配对身份证`);
+      if (d.generated) fixes.push(`${d.generated} 个视频现场办了新身份证（原件两端都没有）`);
+      if (fixes.length) msg += `\n${fixes.join('，')}`;
+      msg += `\n\n把这个文件夹喂给爱思助手就能导回手机（爱思实测可行）`;
+      if (d.errors && d.errors.length) msg += `\n${d.errors.length} 张失败：\n` + d.errors.join('\n');
+      alert(msg);
+      toggleOrganize();
+    } else {
+      alert('导出失败：' + (d.error || '未知错误'));
+    }
+  });
+}
+
+// ---------- 大图查看 ----------
+function openLB(i) { idx = i; show(); lb.classList.add('open'); }
+function closeLB() { lb.classList.remove('open'); stopVideo(); }
+function step(d) { idx = (idx + d + DATA.length) % DATA.length; show(); }
+
+function show() {
+  stopVideo();
+  document.getElementById('infopanel').classList.remove('open');
+  if (DATA[idx].kind === 'video') {   // 独立视频：直接播放（带声音）
+    img.style.display = 'none';
+    livebtn.style.display = 'none';
+    vid.muted = false;
+    vid.src = DATA[idx].video;
+    vid.style.display = 'block';
+    vid.play();
+  } else {
+    img.style.display = 'block';
+    img.src = DATA[idx].view;
+    livebtn.style.display = DATA[idx].video ? 'block' : 'none';
+    livebtn.textContent = '▶ 播放实况';
+  }
+}
+function toggleLive() {
+  if (vid.style.display === 'none') {
+    vid.muted = true;   // 实况小视频静音循环，像苹果那样
+    vid.src = DATA[idx].video;
+    vid.style.display = 'block';
+    img.style.display = 'none';
+    vid.play();
+    livebtn.textContent = '◼ 返回照片';
+  } else {
+    stopVideo();
+    img.style.display = 'block';
+    livebtn.textContent = '▶ 播放实况';
+  }
+}
+function stopVideo() { vid.pause(); vid.removeAttribute('src'); vid.load(); vid.style.display = 'none'; }
+
+// ---------- 详细信息 ----------
+const infopanel = document.getElementById('infopanel');
+function toggleInfo() {
+  if (infopanel.classList.contains('open')) { infopanel.classList.remove('open'); return; }
+  infopanel.innerHTML = '读取中……';
+  infopanel.classList.add('open');
+  fetch('/api/info/' + DATA[idx].rel).then(r => r.json()).then(d => {
+    const rows = [
+      ['文件名', d.name],
+      ['所在相册', d.album],
+      ['拍摄时间', d.taken],
+      ['尺寸', d.width ? d.width + ' × ' + d.height : null],
+      ['文件大小', d.filesize],
+      ['拍摄设备', d.device],
+      ['实况视频', d.video],
+    ].filter(([, v]) => v);
+    infopanel.innerHTML = rows.map(([k, v]) =>
+      `<div><span class="label">${k}</span>${v}</div>`).join('');
+  }).catch(() => { infopanel.innerHTML = '读取失败'; });
+}
+
+document.addEventListener('keydown', e => {
+  if (!lb.classList.contains('open')) return;
+  if (e.key === 'Escape') closeLB();
+  if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'ArrowRight') step(1);
+});
+lb.addEventListener('click', e => { if (e.target === lb) closeLB(); });
+</script>
+</body>
+</html>
