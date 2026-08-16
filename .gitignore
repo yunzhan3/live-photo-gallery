@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+缓存/
+测试照片/
+一刻测试/
+ffmpeg.exe
+package.json
