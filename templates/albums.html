@@ -67,7 +67,7 @@
 
 <div class="importbox">
   <h2>📦 从压缩包导入</h2>
-  <p>把一刻相册下载的 zip 压缩包放进照片目录下的 <b>待导入</b> 文件夹，套娃包也行，然后：</p>
+  <p>把照片压缩包（zip，套娃包也行）放进照片目录下的 <b>待导入</b> 文件夹，然后：</p>
   <input id="importalbum" list="albumlist" placeholder="导入到哪个相册（可输入新名字，默认：未分类）">
   <datalist id="albumlist">
     {% for w in walls %}<option value="{{ w.name }}">{% endfor %}
