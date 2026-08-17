@@ -52,8 +52,27 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 IMPORT_DIR = os.path.join(PHOTO_DIR, "待导入")   # 压缩包扔这里，网页一键导入
 TRASH_DIR = os.path.join(PHOTO_DIR, "回收站")    # 删除的照片挪这里，手动清空
-SKIP_DIRS = [os.path.basename(CACHE_DIR), "缓存", "待导入", "回收站"]
+DATA_DIR = os.path.join(PHOTO_DIR, "相册数据")    # 备注/封面设置随硬盘走，删缓存不丢
+SKIP_DIRS = [os.path.basename(CACHE_DIR), "缓存", "待导入", "回收站", "相册数据"]
 SCAN_CACHE = os.path.join(CACHE_DIR, "扫描缓存.json")
+
+
+def migrate_user_data():
+    """封面设置以前存在缓存目录，搬到照片目录下的 相册数据/（删缓存不丢、随硬盘走）。"""
+    old_file = os.path.join(CACHE_DIR, "封面.json")
+    new_file = os.path.join(DATA_DIR, "封面.json")
+    if os.path.isfile(old_file) and not os.path.isfile(new_file):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        shutil.move(old_file, new_file)
+    elif os.path.isfile(old_file):
+        os.remove(old_file)
+    old_dir = os.path.join(CACHE_DIR, "封面")
+    if os.path.isdir(old_dir):
+        new_dir = os.path.join(DATA_DIR, "封面")
+        os.makedirs(new_dir, exist_ok=True)
+        for fn in os.listdir(old_dir):
+            shutil.move(os.path.join(old_dir, fn), os.path.join(new_dir, fn))
+        shutil.rmtree(old_dir, ignore_errors=True)
 
 
 def safe_path(rel):
@@ -129,21 +148,55 @@ def all_photos():
 
 # ---------------- 相册封面 ----------------
 
-COVER_DIR = os.path.join(CACHE_DIR, "封面")        # 上传的封面图存这里，不进照片目录
-COVERS_FILE = os.path.join(CACHE_DIR, "封面.json")  # 相册名 → 封面设置
+COVER_DIR = os.path.join(DATA_DIR, "封面")        # 上传的封面图存这里，不进照片网格
+COVERS_FILE = os.path.join(DATA_DIR, "封面.json")  # 相册名 → 封面设置
+NOTES_FILE = os.path.join(DATA_DIR, "备注.json")   # 相对路径 → 备注文本
 
 
-def load_covers():
+def load_json(path):
     try:
-        with open(COVERS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
 
 
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+
+
+def load_covers():
+    return load_json(COVERS_FILE)
+
+
 def save_covers(covers):
-    with open(COVERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(covers, f, ensure_ascii=False, indent=1)
+    save_json(COVERS_FILE, covers)
+
+
+def remap_user_data(old_rel, new_path):
+    """文件被移动/删除（挪回收站）后，备注和封面设置里的路径跟着更新。"""
+    new_rel = os.path.relpath(new_path, PHOTO_DIR)
+    if os.path.normcase(new_rel) == os.path.normcase(old_rel):
+        return
+    notes = load_json(NOTES_FILE)
+    hit = None
+    for k in notes:
+        if os.path.normcase(k) == os.path.normcase(old_rel):
+            hit = k
+            break
+    if hit is not None:
+        notes[new_rel] = notes.pop(hit)
+        save_json(NOTES_FILE, notes)
+    covers = load_covers()
+    changed = False
+    for c in covers.values():
+        if c.get("kind") == "pick" and os.path.normcase(c.get("rel", "")) == os.path.normcase(old_rel):
+            c["rel"] = new_rel
+            changed = True
+    if changed:
+        save_covers(covers)
 
 
 def custom_cover_url(name, covers=None):
@@ -353,6 +406,7 @@ def api_info(rel):
         "taken": get_taken_date(full).strftime("%Y-%m-%d %H:%M:%S"),
         "width": None, "height": None, "device": None,
         "video": None,
+        "note": get_note(rel),
     }
     try:
         with Image.open(full) as im:
@@ -373,6 +427,32 @@ def api_info(rel):
             info["video"] = f"{os.path.basename(v)}（{human(os.path.getsize(v))}）"
             break
     return info
+
+
+# ---------------- 备注 ----------------
+
+def get_note(rel):
+    for k, v in load_json(NOTES_FILE).items():
+        if os.path.normcase(k) == os.path.normcase(rel):
+            return v
+    return None
+
+
+@app.route("/api/note", methods=["POST"])
+def set_note():
+    """给照片/视频写备注，空文本 = 删除备注。原片不动，备注存 相册数据/备注.json。"""
+    d = request.get_json(force=True)
+    rel = (d.get("rel") or "").strip()
+    text = (d.get("text") or "").strip()
+    safe_path(rel)  # 文件必须存在
+    notes = load_json(NOTES_FILE)
+    for k in list(notes):  # 同名不同写法的旧 key 清掉
+        if os.path.normcase(k) == os.path.normcase(rel):
+            del notes[k]
+    if text:
+        notes[rel] = text
+    save_json(NOTES_FILE, notes)
+    return {"ok": True}
 
 
 # ---------------- 整理 ----------------
@@ -424,7 +504,9 @@ def move():
                     seen.add(os.path.normcase(v))
                     companions.append(v)
             for p in companions:
-                shutil.move(p, unique_dest(dest_dir, os.path.basename(p)))
+                dst = unique_dest(dest_dir, os.path.basename(p))
+                shutil.move(p, dst)
+                remap_user_data(os.path.relpath(p, PHOTO_DIR), dst)  # 备注/封面跟着走
             moved += 1
         except Exception as e:
             errors.append(f"{rel}: {e}")
@@ -451,7 +533,9 @@ def delete():
                     seen.add(os.path.normcase(v))
                     companions.append(v)
             for p in companions:
-                shutil.move(p, unique_dest(TRASH_DIR, os.path.basename(p)))
+                dst = unique_dest(TRASH_DIR, os.path.basename(p))
+                shutil.move(p, dst)
+                remap_user_data(os.path.relpath(p, PHOTO_DIR), dst)  # 备注/封面跟着走
             deleted += 1
         except Exception as e:
             errors.append(f"{rel}: {e}")
@@ -459,7 +543,7 @@ def delete():
 
 
 def normalize_export_name(filename):
-    """一刻下载的双后缀名（IMG_0430.HEIC.heic）规范化成 IMG_0430.heic，兼容性更好。"""
+    """双后缀名（IMG_0430.HEIC.heic）规范化成 IMG_0430.heic，兼容性更好。"""
     stem, ext = os.path.splitext(filename)
     if os.path.splitext(stem)[1].lower() in MEDIA_EXTS:
         return os.path.splitext(stem)[0] + ext.lower()
@@ -471,7 +555,7 @@ def export():
     """把勾选的照片（连同配对视频）复制到桌面新建的小文件夹，用于导回手机。
     实况配对身份证（UUID）自动补齐，思路参考 live-photo-box 的修复逻辑：
     照片有 UUID → 写进缺证的视频；视频有 UUID → 直接沿用；
-    两边都没有（一刻把两端都剥了）→ 现场生成一个写进视频。写完逐一校验。"""
+    两边都没有（照片视频两端都缺）→ 现场生成一个写进视频。写完逐一校验。"""
     data = request.get_json(force=True)
     targets = data.get("targets", [])
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -696,6 +780,7 @@ def preheat():
 if __name__ == "__main__":
     import threading
     import webbrowser
+    migrate_user_data()  # 老版本的封面设置从缓存搬到 相册数据/
     print(f"照片目录: {PHOTO_DIR}")
     print(f"相册地址: http://{HOST}:{PORT}（浏览器会自动打开）")
     threading.Thread(target=preheat, daemon=True).start()
