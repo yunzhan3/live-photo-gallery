@@ -280,11 +280,13 @@ function stopVideo() { vid.pause(); vid.removeAttribute('src'); vid.load(); vid.
 
 // ---------- 详细信息 ----------
 const infopanel = document.getElementById('infopanel');
+let curNote = '';
 function toggleInfo() {
   if (infopanel.classList.contains('open')) { infopanel.classList.remove('open'); return; }
   infopanel.innerHTML = '读取中……';
   infopanel.classList.add('open');
   fetch('/api/info/' + DATA[idx].rel).then(r => r.json()).then(d => {
+    curNote = d.note || '';
     const rows = [
       ['文件名', d.name],
       ['所在相册', d.album],
@@ -294,9 +296,56 @@ function toggleInfo() {
       ['拍摄设备', d.device],
       ['实况视频', d.video],
     ].filter(([, v]) => v);
-    infopanel.innerHTML = rows.map(([k, v]) =>
-      `<div><span class="label">${k}</span>${v}</div>`).join('');
+    infopanel.innerHTML = rows.map(([k, v]) => {
+      const cell = document.createElement('div');
+      const lab = document.createElement('span');
+      lab.className = 'label'; lab.textContent = k;
+      cell.appendChild(lab);
+      cell.appendChild(document.createTextNode(v));
+      return cell.outerHTML;
+    }).join('') + '<div id="noterow" title="双击编辑备注"><span class="label">备注</span><span id="notetext"></span></div>';
+    renderNote();
+    document.getElementById('noterow').addEventListener('dblclick', editNote);
   }).catch(() => { infopanel.innerHTML = '读取失败'; });
+}
+function renderNote() {
+  const t = document.getElementById('notetext');
+  if (!t) return;
+  t.textContent = curNote || '双击添加……';
+  t.style.color = curNote ? '#eee' : '#777';
+}
+function editNote() {
+  const row = document.getElementById('noterow');
+  if (!row || row.querySelector('input')) return;
+  row.innerHTML = '<span class="label">备注</span>';
+  const input = document.createElement('input');
+  input.value = curNote;
+  input.style.cssText = 'font-size:16px;padding:4px 8px;width:210px;border:1px solid #4A90D9;' +
+                        'border-radius:4px;font-family:inherit;background:#fff;';
+  row.appendChild(input);
+  input.focus(); input.select();
+  const cancel = () => {
+    row.innerHTML = '<span class="label">备注</span><span id="notetext"></span>';
+    renderNote();
+  };
+  input.addEventListener('blur', cancel);  // 点别处 = 取消，不用专门按 Esc
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { input.removeEventListener('blur', cancel); cancel(); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.removeEventListener('blur', cancel);
+      const text = input.value.trim();
+      fetch('/api/note', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({rel: DATA[idx].rel, text})
+      }).then(r => r.json()).then(d => {
+        if (d.ok) curNote = text;
+        else alert('备注保存失败');
+        cancel();
+      });
+    }
+  });
 }
 
 document.addEventListener('keydown', e => {
